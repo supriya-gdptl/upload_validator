@@ -1,0 +1,17 @@
+fastapi==0.111.0
+uvicorn[standard]==0.29.0
+python-multipart==0.0.9
+
+# Computer Vision / OCR
+pytesseract==0.3.10
+Pillow==10.3.0
+opencv-python-headless==4.9.0.80
+PyMuPDF==1.24.3
+
+# Local CLIP model (no API key needed)
+openai-clip==1.0.1
+torch==2.3.0
+torchvision==0.18.0
+
+# Semantic text similarity
+sentence-transformers==3.0.0
