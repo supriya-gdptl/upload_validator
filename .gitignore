@@ -22,4 +22,10 @@ share/python-wheels/
 *.egg-info/
 .installed.cfg
 *.egg
+# Compiled binary addons (https://nodejs.org/api/addons.html)
+build/Release
+
+# Dependency directories
+node_modules/
+jspm_packages/
 
