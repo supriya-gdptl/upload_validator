@@ -1,6 +1,6 @@
 __pycache__/
 .DS_Store
-
+.idea/
 # C extensions
 *.so
 
