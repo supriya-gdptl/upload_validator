@@ -21,17 +21,9 @@ from PIL import Image
 from sentence_transformers import SentenceTransformer, util
 import torch
 
-# ── CLIP (local, no API) ──────────────────────────────────────────────────────
-try:
-    import clip
-    CLIP_AVAILABLE = True
-    clip_model, clip_preprocess = clip.load("ViT-B/32", device="cpu")
-except ImportError:
-    CLIP_AVAILABLE = False
-    print("WARNING: openai-clip not installed. Visual embedding disabled; OCR only.")
 
 # ── Sentence-BERT ─────────────────────────────────────────────────────────────
-sbert = SentenceTransformer("all-MiniLM-L6-v2")
+qwen_model = SentenceTransformer("Qwen/Qwen3-VL-Embedding-2B")
 
 app = FastAPI(title="Upload Validator", version="1.0.0")
 
@@ -54,23 +46,19 @@ def ocr_image(pil_img: Image.Image) -> str:
     return txt
 
 
-def clip_image_text_similarity(pil_images: list, text: str) -> float:
+def image_text_similarity(pil_images: list, text: str) -> float:
     """
     Compute cosine similarity between a list of PIL images and a text string
-    using CLIP embeddings. Returns the max similarity across all images (0-1).
+    using Qwen3-VL-Embedding-2B embeddings. Returns the max similarity across all images (0-1).
     """
-    if not CLIP_AVAILABLE or not pil_images:
-        return 0.0
 
     with torch.no_grad():
-        text_tok = clip.tokenize([text], truncate=True)
-        text_feat = clip_model.encode_text(text_tok)
+        text_feat = qwen_model.encode(text)
         text_feat = text_feat / text_feat.norm(dim=-1, keepdim=True)
 
         sims = []
         for img in pil_images:
-            img_tensor = clip_preprocess(img).unsqueeze(0)
-            img_feat = clip_model.encode_image(img_tensor)
+            img_feat = qwen_model.encode(img)
             img_feat = img_feat / img_feat.norm(dim=-1, keepdim=True)
             sim = (img_feat @ text_feat.T).item()
             sims.append(sim)
@@ -84,8 +72,8 @@ def sbert_similarity(text_a: str, text_b: str) -> float:
     """Semantic similarity between two strings using Sentence-BERT (0-1)."""
     if not text_a or not text_b:
         return 0.0
-    emb_a = sbert.encode(text_a, convert_to_tensor=True)
-    emb_b = sbert.encode(text_b, convert_to_tensor=True)
+    emb_a = qwen_model.encode(text_a, convert_to_tensor=True)
+    emb_b = qwen_model.encode(text_b, convert_to_tensor=True)
     return float(util.cos_sim(emb_a, emb_b))
 
 
@@ -103,14 +91,10 @@ def analyse_image(data: bytes, description: str) -> dict:
     pil_img = Image.open(io.BytesIO(data)).convert("RGB")
 
     ocr_text  = ocr_image(pil_img)
-    clip_sim  = clip_image_text_similarity([pil_img], description)
+    clip_sim  = image_text_similarity([pil_img], description)
     text_sim  = sbert_similarity(ocr_text, description) if ocr_text else 0.0
 
-    # If CLIP not available, rely on OCR alone
-    if not CLIP_AVAILABLE:
-        score = text_sim
-    else:
-        score = combine_scores(clip_sim, text_sim)
+    score = combine_scores(clip_sim, text_sim)
 
     return {
         "score": round(score * 100, 1),
@@ -139,13 +123,10 @@ def analyse_pdf(data: bytes, description: str) -> dict:
             page_texts[-1] += " " + ocr_image(img)
 
     full_text = " ".join(page_texts).strip()
-    clip_sim  = clip_image_text_similarity(page_images, description)
+    clip_sim  = image_text_similarity(page_images, description)
     text_sim  = sbert_similarity(full_text, description) if full_text else 0.0
 
-    if not CLIP_AVAILABLE:
-        score = text_sim
-    else:
-        score = combine_scores(clip_sim, text_sim)
+    score = combine_scores(clip_sim, text_sim)
 
     return {
         "score": round(score * 100, 1),
@@ -186,13 +167,10 @@ def analyse_video(data: bytes, description: str, max_frames: int = 8) -> dict:
         cap.release()
 
         full_ocr  = " ".join(c for c in ocr_chunks if c).strip()
-        clip_sim  = clip_image_text_similarity(frames, description)
+        clip_sim  = image_text_similarity(frames, description)
         text_sim  = sbert_similarity(full_ocr, description) if full_ocr else 0.0
 
-        if not CLIP_AVAILABLE:
-            score = text_sim if full_ocr else 0.25  # give partial credit for video
-        else:
-            score = combine_scores(clip_sim, text_sim)
+        score = combine_scores(clip_sim, text_sim)
 
         return {
             "score": round(score * 100, 1),
@@ -211,7 +189,7 @@ def analyse_video(data: bytes, description: str, max_frames: int = 8) -> dict:
 
 @app.get("/health")
 def health():
-    return {"status": "ok", "clip_available": CLIP_AVAILABLE}
+    return {"status": "ok"}
 
 
 @app.post("/validate")
@@ -272,5 +250,4 @@ async def validate_upload(
         "clip_similarity": result.get("clip_similarity", 0),
         "text_similarity": result.get("text_similarity", 0),
         "frames_analysed": result.get("frames_analysed"),
-        "clip_available":  CLIP_AVAILABLE,
     })

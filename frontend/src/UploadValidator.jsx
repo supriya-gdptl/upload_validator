@@ -124,7 +124,7 @@ export default function UploadValidator() {
     form.append("description", description);
 
     try {
-      const res = await fetch(`${API_BASE}/validate`, {
+      const res = await fetch(`${AP_BASE}/validate`, {
         method: "POST",
         body: form,
       });
@@ -582,7 +582,7 @@ export default function UploadValidator() {
 
                   <div className="debug">
                     <span className="chip">type: {result.file_type}</span>
-                    {result.clip_available && (
+                    {(
                       <span className="chip">clip: {result.clip_similarity}%</span>
                     )}
                     <span className="chip">text: {result.text_similarity}%</span>
