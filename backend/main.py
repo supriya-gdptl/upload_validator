@@ -29,7 +29,7 @@ app = FastAPI(title="Upload Validator", version="1.0.0")
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=["http://localhost:3000", "http://127.0.0.1:3000"],
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -42,9 +42,28 @@ app.add_middleware(
 def ocr_image(pil_img: Image.Image) -> str:
     """Run Tesseract OCR on a PIL image and return extracted text."""
     txt = pytesseract.image_to_string(pil_img).strip()
-    print(txt)
     return txt
 
+CLIP_LO, CLIP_HI = 0.01, 0.50   # placeholders: set from your own measurements
+
+def normalise_clip(raw: float) -> float:
+    return min(1.0, max(0.0, (raw - CLIP_LO) / (CLIP_HI - CLIP_LO)))
+
+def count_confident_words(pil_img, min_conf=60):
+    d = pytesseract.image_to_data(pil_img, output_type=pytesseract.Output.DICT)
+    return sum(1 for w, c in zip(d["text"], d["conf"])
+               if w.strip() and float(c) > min_conf)
+
+DOC_PROTOS   = ["an invoice", "a receipt", "a scanned document",
+                "a screenshot of text", "a form", "a purchase order", "a contract"]
+PHOTO_PROTOS = ["a photograph of a scene", "a picture of an object",
+                "a photo of people or animals"]
+
+def claims_document(description):
+    d  = qwen_model.encode(description)
+    dp = max(util.cos_sim(d, qwen_model.encode(p)) for p in DOC_PROTOS)
+    pp = max(util.cos_sim(d, qwen_model.encode(p)) for p in PHOTO_PROTOS)
+    return dp > pp
 
 def image_text_similarity(pil_images: list, text: str) -> float:
     """
@@ -53,22 +72,22 @@ def image_text_similarity(pil_images: list, text: str) -> float:
     """
 
     with torch.no_grad():
-        text_feat = qwen_model.encode(text)
+        text_feat = qwen_model.encode(text, convert_to_tensor=True)
         text_feat = text_feat / text_feat.norm(dim=-1, keepdim=True)
 
         sims = []
         for img in pil_images:
-            img_feat = qwen_model.encode(img)
+            img_feat = qwen_model.encode(img, convert_to_tensor=True)
             img_feat = img_feat / img_feat.norm(dim=-1, keepdim=True)
-            sim = (img_feat @ text_feat.T).item()
-            sims.append(sim)
+            sims.append((img_feat @ text_feat).item())
 
     # CLIP cosine similarities are typically in [-1, 1]; normalise to [0, 1]
     raw = max(sims)
-    return (raw + 1) / 2
+    print(raw)
+    return normalise_clip(raw)
 
 
-def sbert_similarity(text_a: str, text_b: str) -> float:
+def text_text_similarity(text_a: str, text_b: str) -> float:
     """Semantic similarity between two strings using Sentence-BERT (0-1)."""
     if not text_a or not text_b:
         return 0.0
@@ -92,13 +111,24 @@ def analyse_image(data: bytes, description: str) -> dict:
 
     ocr_text  = ocr_image(pil_img)
     clip_sim  = image_text_similarity([pil_img], description)
-    text_sim  = sbert_similarity(ocr_text, description) if ocr_text else 0.0
+    text_sim  = text_text_similarity(ocr_text, description) if ocr_text else 0.0
 
-    score = combine_scores(clip_sim, text_sim)
+    # score = combine_scores(clip_sim, text_sim, clip_weight=1.0, text_weight=0.0)
+    # score = max(clip_sim, text_sim)
+    is_document = count_confident_words(pil_img) >= 25
+
+    if is_document:
+        content_score = text_text_similarity(ocr_text, description)
+        if not claims_document(description):
+            score = min(content_score, 0.35)  # content matches, type is wrong → reject
+        else:
+            score = content_score
+    else:
+        score = clip_sim
 
     return {
         "score": round(score * 100, 1),
-        "ocr_text": ocr_text[:500] if ocr_text else "",
+        "ocr_text": ocr_text if ocr_text else "",
         "clip_similarity": round(clip_sim * 100, 1),
         "text_similarity": round(text_sim * 100, 1),
     }
@@ -124,13 +154,15 @@ def analyse_pdf(data: bytes, description: str) -> dict:
 
     full_text = " ".join(page_texts).strip()
     clip_sim  = image_text_similarity(page_images, description)
-    text_sim  = sbert_similarity(full_text, description) if full_text else 0.0
+    text_sim  = text_text_similarity(full_text, description) if full_text else 0.0
 
-    score = combine_scores(clip_sim, text_sim)
+    # score = combine_scores(clip_sim, text_sim)
+    score = max(clip_sim, text_sim)
+    print(full_text)
 
     return {
         "score": round(score * 100, 1),
-        "ocr_text": full_text[:500],
+        "ocr_text": full_text,
         "clip_similarity": round(clip_sim * 100, 1),
         "text_similarity": round(text_sim * 100, 1),
     }
@@ -168,7 +200,7 @@ def analyse_video(data: bytes, description: str, max_frames: int = 8) -> dict:
 
         full_ocr  = " ".join(c for c in ocr_chunks if c).strip()
         clip_sim  = image_text_similarity(frames, description)
-        text_sim  = sbert_similarity(full_ocr, description) if full_ocr else 0.0
+        text_sim  = text_text_similarity(full_ocr, description) if full_ocr else 0.0
 
         score = combine_scores(clip_sim, text_sim)
 

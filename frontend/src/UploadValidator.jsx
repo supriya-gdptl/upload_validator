@@ -124,7 +124,7 @@ export default function UploadValidator() {
     form.append("description", description);
 
     try {
-      const res = await fetch(`${AP_BASE}/validate`, {
+      const res = await fetch(`${API_BASE}/validate`, {
         method: "POST",
         body: form,
       });
@@ -142,6 +142,7 @@ export default function UploadValidator() {
 
       setResult(data);
     } catch {
+      console.error(err);
       setResult({ error: "Cannot reach the validation server. Is the backend running?" });
     } finally {
       setLoading(false);
